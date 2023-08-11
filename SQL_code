@@ -1,0 +1,132 @@
+--Seasonality of claims
+WITH claims_seasonality AS
+(SELECT
+  COUNT(product_name) as claim_count,
+  ROUND(SUM(claim_amount),2) as total_claim_amount,
+  ROUND((claim_amount-covered_amount),2) as revenue,
+  EXTRACT(month from claim_date) as month,
+  EXTRACT(year from claim_date) as year
+FROM`1_1.claims_row_health`
+GROUP BY month, year, revenue
+ORDER BY year, month)
+
+SELECT  
+  SUM(claim_count) as claim_count, 
+  ROUND(SUM(total_claim_amount),2) as claim_amount,
+  ROUND(SUM(revenue),2) as revenue,
+  month, 
+  year
+FROM claims_seasonality
+GROUP BY month,year
+ORDER BY year, month;
+
+--Claims by dimensions. Add column with product category tied to product_name.
+WITH claimsbydim as 
+(SELECT
+  product_name,
+  CASE WHEN LOWER(state) LIKE 'Arizona' THEN 'AZ'
+    ELSE state
+    END AS state,
+  campaign_type,
+  platform,
+  COUNT(product_name) as claim_count,
+  ROUND(SUM(claim_amount),2) as total_claim_amount,
+  ROUND((claim_amount-covered_amount),2) as revenue,
+  EXTRACT(month from claim_date) as month,
+  EXTRACT(year from claim_date) as year
+FROM`1_1.claims_row_health` as claims
+LEFT JOIN `1_1.customers_row_health` as customers
+  ON claims.customer_id = customers.customer_id
+LEFT JOIN `1_1.campaigns_row_health` as campaigns
+  ON customers.campaign_id = campaigns.campaign_id
+GROUP BY product_name, month, year, revenue, state, campaign_type, platform
+ORDER BY product_name, year, month)
+
+SELECT 
+  product_name,
+  CASE WHEN LOWER(product_name) LIKE '%hair%' THEN 'Hair and Nail Supplements'
+    WHEN LOWER(product_name) LIKE '%biotin%' THEN 'Biotin Supplements'
+    WHEN LOWER(product_name) LIKE '%vitamin b%' THEN 'Vitamin B Supplements'
+    ELSE product_name
+    END AS product_category,
+  CASE WHEN LOWER(state) LIKE 'Arizona' THEN 'AZ'
+    ELSE state
+    END AS state,
+  campaign_type,
+  platform,
+  SUM(claim_count) as claim_count, 
+  ROUND(SUM(total_claim_amount),2) as claim_amount,
+  ROUND(SUM(revenue),2) as revenue,
+  month, 
+  year
+FROM claimsbydim
+GROUP BY product_name, month, year, state, campaign_type, platform
+ORDER BY product_name, year, month;
+
+--Most successful campaign. Create CTR (click through rate) column: % of impressions that got a click. Campaign conversion rate: % of impressions that got a signup. Success measured by impressions, clicks, sign_ups (= amount of new customers brought in). Create cost per impression and cost per sign up.
+
+WITH customer_signup AS
+(SELECT
+  campaign_id, 
+  count(campaign_id) as num_signups
+FROM `1_1.customers_row_health`
+GROUP BY campaign_id)
+
+SELECT 
+  campaigns.campaign_id,
+  campaign_type,
+  campaign_category,
+  platform,
+  ROUND(clicks,2) AS clicks,
+  impressions,
+  num_signups,
+  days_run,
+  ROUND(cost,2) AS cost,
+  CONCAT(campaign_category,' - ', campaign_type, ' - ', platform) AS campaign_details,
+  ROUND(((num_signups/impressions)*100),4) AS campaign_conversion_rate,
+  ROUND((cost/num_signups),2) AS customer_acquisition_cost,
+  ROUND(((clicks/impressions)*100),2) AS click_through_rate,
+  ROUND((cost/impressions),4) AS cost_per_impression,
+  ROUND((cost/days_run),2) AS cost_per_day  
+FROM `1_1.campaigns_row_health` as campaigns
+LEFT JOIN customer_signup 
+  ON campaigns.campaign_id = customer_signup.campaign_id
+ORDER BY campaign_conversion_rate;
+
+--Most popular product in each state.
+WITH claimsbydim AS 
+(SELECT
+  product_name,
+  CASE WHEN LOWER(state) LIKE 'arizona' THEN 'AZ'
+    WHEN LOWER(state) LIKE 'oregon' THEN 'OR'
+    WHEN LOWER(state) LIKE 'maryland' THEN 'MD'
+    ELSE state
+    END AS state,
+  campaign_type,
+  platform,
+  COUNT(product_name) as claim_count,
+  ROUND(SUM(claim_amount),2) as total_claim_amount,
+  ROUND((claim_amount-covered_amount),2) as revenue,
+  EXTRACT(month from claim_date) as month,
+  EXTRACT(year from claim_date) as year
+FROM`1_1.claims_row_health` as claims
+LEFT JOIN `1_1.customers_row_health` as customers
+  ON claims.customer_id = customers.customer_id
+LEFT JOIN `1_1.campaigns_row_health` as campaigns
+  ON customers.campaign_id = campaigns.campaign_id
+GROUP BY product_name, month, year, revenue, state, campaign_type, platform
+ORDER BY product_name, year, month),
+
+productbystate AS
+(SELECT 
+  state, 
+  product_name, 
+  SUM(claim_count) as claim_count,
+  RANK() OVER (PARTITION BY state ORDER BY SUM(claim_count) DESC) AS popularity
+FROM claimsbydim
+GROUP BY state, product_name)
+
+SELECT *
+FROM productbystate
+WHERE popularity = 1
+ORDER BY 2
