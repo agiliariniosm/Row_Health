@@ -1,0 +1,132 @@
+--1.What are the total number of claims per month, per product in 2020?
+Select extract(month from claim_date) as month, FORMAT_DATE('%B',claim_date) as month_name, count(product_name) as claim_number, product_name
+from `1_1.claims_row_health`
+where extract(year from claim_date)=2020
+group by month,month_name,product_name
+order by month, product_name;
+
+--2.What was the total number of claims, total claim cost, and total covered cost in June 2023?
+Select count(distinct claim_id) as num_claims, sum(claim_amount) as claim_total, sum(covered_amount) as covered_total
+from `1_1.claims_row_health`
+where claim_date between '2023-06-01' AND '2023-06-30';
+--Some claim amounts and covered amounts had decimals with more than two decimal positions which is inconsistent with dollar values. 
+
+--3.What were the top 2 hair products in June 2023?
+select product_name, count(product_name) as num_claims
+from `1_1.claims_row_health`
+where date_trunc(claim_date, month) = '2023-06-01'
+group by product_name
+order by num_claims desc
+limit 2;
+
+--4.Which state had the highest number of claims in the program in 2023? How would you compare this to the state with the highest claim amounts?
+Select state, count(claim_id) as num_claims
+from `1_1.customers_row_health` as customers
+left join `1_1.claims_row_health` as claims
+on customers.customer_id = claims.customer_id
+group by state
+order by num_claims desc;
+
+Select state, round(sum(claim_amount),2) as total_claim_amt
+from `1_1.customers_row_health` as customers
+left join `1_1.claims_row_health` as claims
+on customers.customer_id = claims.customer_id
+group by state
+order by total_claim_amt desc;
+
+
+--5.Which category had the highest covered amount on Christmas in 2022: Hair supplements, Biotin supplements, or Vitamin B supplements? Assume each product has the keyword in its name.
+with product_category_t as( 
+Select
+Case 
+  When lower(product_name) like '%hair%' then 'Hair Supplements'
+  when lower(product_name) like '%biotin%' then 'Biotin Supplements'
+  when lower(product_name) like '%vitamin b%' then 'Vitamin B Supplements'
+  else 'Other'
+  end as product_category,
+  sum(claim_amount) as total_claim_amt
+from `1_1.claims_row_health`
+where claim_date = '2022-12-25'
+group by product_name)
+
+Select product_category, round(sum(total_claim_amt),2) as total_claim_amt
+from `product_category_t`
+group by product_category
+order by total_claim_amt desc;
+
+--6.How many customers either have a platinum plan and signed up in 2023, or signed up in 2022?
+select count (distinct(customer_id)) as plat_2022_2023
+from `1_1.customers_row_health`
+where (plan ='platinum'AND extract(year from signup_date)=2023) OR (extract(year from signup_date)=2022);
+
+--7.Which 10 customers have the most claims across all time? Return their first and last name as one field.
+select concat(first_name, ' ',last_name) as full_name, count(claims.customer_id) as num_claims
+from `1_1.claims_row_health` as claims
+left join `1_1.customers_row_health` as customers
+on claims.customer_id = customers.customer_id
+group by first_name, last_name
+order by num_claims desc
+limit 10;
+
+--8.What was the average percent reimbursement across all years for products that were either hair related and sold in NY, or a supplement product?
+select 
+  round(
+    (avg(((covered_amount)/claim_amount)*100))
+  ,2)
+from `1_1.claims_row_health` as claims
+left join `1_1.customers_row_health` as customers
+on claims.customer_id = customers.customer_id  
+where 
+  claim_amount != 0 
+  AND ((lower(product_name) like '%hair%' AND state like 'NY')
+      OR (lower(product_name) like '%supplement%'));
+
+--9.For customers with more than one claim, what's the average number of days between claims for each customer?
+with claims_per_customer_t as (
+  select 
+  customer_id, count(customer_id) as claims_per_customer
+  from `1_1.claims_row_health`
+  group by customer_id),
+  
+lead_table as(
+select customers.customer_id,concat(first_name, ' ',last_name) as full_name,claim_date,LEAD(claim_date) OVER (PARTITION BY claims.customer_id ORDER BY claim_date) AS lead_date
+from `1_1.claims_row_health` as claims
+left join `1_1.customers_row_health` as customers
+  on claims.customer_id= customers.customer_id
+left join claims_per_customer_t
+  on customers.customer_id = claims_per_customer_t.customer_id
+where claims_per_customer>1),
+
+lead_table_2 as(
+  select full_name, round(avg(date_diff(lead_date,claim_date,day)),2) as avg_days_btwn_claims
+  from lead_table
+  group by full_name)
+
+select *
+from lead_table_2
+order by lead_table_2.avg_days_btwn_claims desc;
+
+--10.For customers who have more than 1 order, which product is most often bought as the second product?
+with rank_product_table as
+  (select claims.customer_id, 
+    concat(first_name, ' ',last_name) as full_name, 
+    product_name, 
+    claim_date, 
+    RANK() OVER (PARTITION BY claims.customer_id ORDER BY claim_date) as rank_product
+  from `1_1.claims_row_health` as claims
+  left join `1_1.customers_row_health` as customers
+  on claims.customer_id = customers.customer_id
+
+order by customer_id,rank_product),
+
+rank_product_table2 as 
+  (select full_name, 
+  product_name
+  from rank_product_table
+  where rank_product = 2)
+
+select product_name, count(product_name) as num_bought_second
+from rank_product_table2
+group by product_name
+order by 2 desc
+--Assuming that orders and claims correlate 1:1
